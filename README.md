@@ -15,7 +15,7 @@ You can update the sample config or provide flags to override any defaults
 `$ go test`
 
 To run the integration test that verifies that the workflow works with rabbit:
-`$ go test ./... -tags integration
+`$ go test ./... -tags integration`
 
 ## Starting RabbitMQ (Mac)
 `$ rabbitmq-server`
