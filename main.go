@@ -179,11 +179,11 @@ func main() {
 
 	// start all the services; waitgroup will block until
 	// we can be sure that all services are started
-	wg := sync.WaitGroup{}
+	wg := &sync.WaitGroup{}
 	wg.Add(3)
-	go a.Start(&wg)
-	go b.Start(&wg)
-	go c.Start(&wg)
+	go a.Start(wg)
+	go b.Start(wg)
+	go c.Start(wg)
 	wg.Wait()
 
 	// handle the submission of new `year` values to kick off jobs
@@ -203,15 +203,17 @@ func main() {
 	}()
 
 	// start a listener to so we can submit new years for which to fetch movies
-	r := mux.NewRouter()
-	r.HandleFunc("/submit/{year}", listenHandler)
-
 	log.Printf("starting listening on :%d/submit/{year}", port)
-
-	err = http.ListenAndServe(fmt.Sprintf(":%d", port), r)
+	err = http.ListenAndServe(fmt.Sprintf(":%d", port), Router())
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func Router() *mux.Router {
+	r := mux.NewRouter()
+	r.HandleFunc("/submit/{year}", listenHandler)
+	return r
 }
 
 // listenHandler allows us to submit new work to our services
@@ -226,8 +228,10 @@ func listenHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	DataIn <- i
+	log.Println("new request")
 
-	w.Write([]byte(fmt.Sprintf("hi - going to search for %v", year)))
+	w.WriteHeader(http.StatusAccepted)
+	w.Write([]byte(fmt.Sprintf("Ok - going to search for movies in %v... Check logs for results.\n", year)))
 }
 
 // fetchMovies returns movies from a given year

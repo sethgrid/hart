@@ -8,24 +8,25 @@ import (
 	"github.com/streadway/amqp"
 )
 
+// Service runs a queue worker. Work is defined by Service.Receiver
+// which the client must assign.
 type Service struct {
-	id string
+	Receiver func([]byte)
 
-	host string
-
+	id          string
+	host        string
 	receiveChan chan []byte
-
-	Receiver    func([]byte)
 	listenTopic string
-
-	ch *amqp.Channel
+	ch          *amqp.Channel
 }
 
+// Message defines what topic to which we will post, and what data
 type Message struct {
 	Topic string
 	Data  []byte
 }
 
+// New initializes a Service
 func New(id string, host string, listenTopic string) *Service {
 	return &Service{
 		id:          id,
@@ -35,11 +36,8 @@ func New(id string, host string, listenTopic string) *Service {
 	}
 }
 
-// func (s *Service) Close() error{
-// 	s.conn.Close()
-// 	s.ch.Close()
-// }
-
+// Start is a blocking call that spins up the Service for
+// publishing and reading from queues
 func (s *Service) Start(wg *sync.WaitGroup) error {
 	log.Println("starting", s.id)
 	conn, err := amqp.Dial(s.host)
@@ -76,6 +74,7 @@ func (s *Service) Start(wg *sync.WaitGroup) error {
 	)
 	failOnError(err, "Failed to register a consumer")
 
+	// don't block on reading
 	go func() {
 		for d := range msgs {
 			if d.Body == nil {
@@ -84,15 +83,18 @@ func (s *Service) Start(wg *sync.WaitGroup) error {
 			}
 			log.Printf("Received a message: %s", d.Body)
 
+			// call the user defined receiver
 			if s.Receiver == nil {
 				log.Fatal("you must define a reciever function for", s.id)
 			}
-
 			s.Receiver(d.Body)
 		}
 	}()
 
+	// signal to the client code that this service is ready
 	wg.Done()
+
+	// keep this service alive, otherwise we will close the conn and ch
 	forever := make(chan bool)
 	log.Printf(" [*] Waiting for messages. To exit press CTRL+C")
 	<-forever
@@ -100,6 +102,7 @@ func (s *Service) Start(wg *sync.WaitGroup) error {
 	return nil
 }
 
+// Publish sends a message to the given topic with the given data
 func (s *Service) Publish(m Message) error {
 	log.Println("publishing to", m.Topic)
 	if s.ch == nil {
@@ -117,6 +120,8 @@ func (s *Service) Publish(m Message) error {
 		})
 }
 
+// failOnError is a helper function for killing the Service upon error
+// In "real" code, we would not panic in the library without recovering
 func failOnError(err error, msg string) {
 	if err != nil {
 		log.Fatalf("%s: %s", msg, err)

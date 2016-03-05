@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -8,8 +9,8 @@ import (
 )
 
 func TestListener(t *testing.T) {
-	// url does not matter
-	req, err := http.NewRequest("GET", "http://somedomain/app/", nil)
+	expectedYear := 1990
+	req, err := http.NewRequest("GET", fmt.Sprintf("/submit/%d", expectedYear), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -17,11 +18,16 @@ func TestListener(t *testing.T) {
 	DataIn = make(chan int)
 	w := httptest.NewRecorder()
 
-	listenHandler(w, req)
+	go Router().ServeHTTP(w, req)
 
-	// select {
-	// case year := <-DataIn:
-	// 	fmt.Printf("YEAR!!", year)
-	// }
+	var year int
+
+	select {
+	case year = <-DataIn:
+	}
+
+	if year != expectedYear {
+		t.Errorf("got %d, want %d", year, expectedYear)
+	}
 
 }
