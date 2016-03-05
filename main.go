@@ -59,20 +59,20 @@ func main() {
 
 	DataIn = make(chan int, 5)
 
+	// start up queues
+	// queues := []string{"year", "movie", "cast"}
+	//    for _, queue := range queues{
+
+	//    }
+
 	r := mux.NewRouter()
 	r.HandleFunc("/submit/{year}", listenHandler)
 
 	var err error
 
-	// a := service.New(amqpURL, "default", "year")
-	// b := service.New(amqpURL, "year", "movie")
-	// c := service.New(amqpURL, "movie", "cast")
-	// d := service.New(amqpURL, "cast", "default")
-
-	a := service.New("A", amqpURL, "default", "year")
-	b := service.New("B", amqpURL, "year", "movie")
-	c := service.New("C", amqpURL, "movie", "cast")
-	d := service.New("D", amqpURL, "foo", "default")
+	a := service.New("A", amqpURL, "year")
+	b := service.New("B", amqpURL, "movie")
+	c := service.New("C", amqpURL, "cast")
 
 	a.Receiver = func(data []byte) {
 		log.Println("A got ", string(data))
@@ -89,22 +89,17 @@ func main() {
 	}
 
 	c.Receiver = func(data []byte) {
-		log.Println("c got ", string(data))
+		log.Println("C got ", string(data))
 		// d.Publish(service.Message{Topic: "file", Data: data})
-	}
-
-	d.Receiver = func(data []byte) {
-		log.Println("D got ", string(data))
 	}
 
 	go a.Start()
 	go b.Start()
-	go b.Start()
-	go d.Start()
+	go c.Start()
 
 	// let the services get started
 	// TODO: make this not racy
-	<-time.After(2 * time.Second)
+	<-time.After(5 * time.Second)
 
 	go func() {
 		for {

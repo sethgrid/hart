@@ -10,16 +10,14 @@ import (
 type Service struct {
 	id string
 
-	host         string
-	publishTopic string
-	listenTopic  string
+	host string
 
 	receiveChan chan []byte
 
-	Receiver func([]byte)
+	Receiver    func([]byte)
+	listenTopic string
 
-	qName string
-	ch    *amqp.Channel
+	ch *amqp.Channel
 }
 
 type Message struct {
@@ -27,17 +25,22 @@ type Message struct {
 	Data  []byte
 }
 
-func New(id string, host string, publishTopic string, listenTopic string) Service {
-	return Service{
-		id:           id,
-		host:         host,
-		publishTopic: publishTopic,
-		listenTopic:  listenTopic,
-		receiveChan:  make(chan []byte),
+func New(id string, host string, listenTopic string) *Service {
+	return &Service{
+		id:          id,
+		host:        host,
+		listenTopic: listenTopic,
+		receiveChan: make(chan []byte),
 	}
 }
 
-func (s Service) Start() error {
+// func (s *Service) Close() error{
+// 	s.conn.Close()
+// 	s.ch.Close()
+// }
+
+func (s *Service) Start() error {
+	log.Println("starting", s.id)
 	conn, err := amqp.Dial(s.host)
 
 	failOnError(err, "unable to connecto to rabbit")
@@ -50,17 +53,6 @@ func (s Service) Start() error {
 
 	defer s.ch.Close()
 
-	q, err := s.ch.QueueDeclare(
-		s.publishTopic, // name
-		false,          // durable
-		false,          // delete when unused
-		false,          // exclusive
-		false,          // no-wait
-		nil,            // arguments
-	)
-	failOnError(err, "unable to declare queue")
-
-	// debug: is it a missing queue declaration?
 	_, err = s.ch.QueueDeclare(
 		s.listenTopic, // name
 		false,         // durable
@@ -69,12 +61,9 @@ func (s Service) Start() error {
 		false,         // no-wait
 		nil,           // arguments
 	)
-
 	failOnError(err, "unable to declare queue")
-
-	s.qName = q.Name
-
 	log.Printf("%s listening on %s", s.id, s.listenTopic)
+
 	msgs, err := s.ch.Consume(
 		s.listenTopic, // queue
 		"",            // consumer
@@ -93,10 +82,7 @@ func (s Service) Start() error {
 				continue
 			}
 			log.Printf("Received a message: %s", d.Body)
-			if s == nil {
-				log.Println("no s???????")
-				continue
-			}
+
 			s.Receiver(d.Body)
 		}
 	}()
@@ -108,7 +94,7 @@ func (s Service) Start() error {
 	return nil
 }
 
-func (s Service) Publish(m Message) error {
+func (s *Service) Publish(m Message) error {
 	log.Println("publishing to", m.Topic)
 	if s.ch == nil {
 		log.Println("no channel")
