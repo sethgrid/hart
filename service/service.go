@@ -83,6 +83,10 @@ func (s *Service) Start() error {
 			}
 			log.Printf("Received a message: %s", d.Body)
 
+			if s.Receiver == nil {
+				log.Fatal("you must define a reciever function for", s.id)
+			}
+
 			s.Receiver(d.Body)
 		}
 	}()

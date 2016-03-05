@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
@@ -41,6 +43,12 @@ type Cast struct {
 	ProfilePath string `json:"profile_path"`
 }
 
+type LogResult struct {
+	Movie   string   `json:"movie_title"`
+	Release string   `json:"release_date"`
+	Cast    []string `json:"cast"`
+}
+
 func main() {
 	// read configs
 	// start listener service
@@ -75,22 +83,66 @@ func main() {
 	c := service.New("C", amqpURL, "cast")
 
 	a.Receiver = func(data []byte) {
-		log.Println("A got ", string(data))
-		b.Publish(service.Message{Topic: "movie", Data: data})
+		year, err := strconv.Atoi(string(data))
+		if err != nil {
+			log.Println("unable to read year", err)
+			return
+		}
+		movies := fetchMovies(year)
+
+		for _, movie := range movies.Results {
+			mData, err := json.Marshal(movie)
+			if err != nil {
+				log.Println("unable to marshal movie information", err)
+				return
+			}
+
+			err = b.Publish(service.Message{Topic: "movie", Data: mData})
+			if err != nil {
+				log.Println("unable to publish to movie topic", err)
+			}
+		}
 	}
 
 	b.Receiver = func(data []byte) {
-		log.Println("B got ", string(data))
-		err := c.Publish(service.Message{Topic: "cast", Data: data})
+		movie := &MovieData{}
+		err := json.Unmarshal(data, &movie)
 		if err != nil {
-			log.Println("Error!!!", err)
+			log.Println("unable to unmarshal data", err)
+			return
 		}
-		log.Println("no error")
+
+		compiledInfo := &LogResult{}
+		compiledInfo.Movie = movie.Title
+		compiledInfo.Release = movie.ReleaseDate
+		compiledInfo.Cast = make([]string, 0)
+
+		castResult := fetchCast(movie.ID)
+		for _, cast := range castResult.Results {
+			compiledInfo.Cast = append(compiledInfo.Cast, cast.Name)
+		}
+
+		b, err := json.Marshal(compiledInfo)
+		if err != nil {
+			log.Println("unable to marshal compiled movie info", err)
+			return
+		}
+
+		err = c.Publish(service.Message{Topic: "cast", Data: b})
+		if err != nil {
+			log.Println("error publishing to cast", err)
+		}
 	}
 
 	c.Receiver = func(data []byte) {
-		log.Println("C got ", string(data))
-		// d.Publish(service.Message{Topic: "file", Data: data})
+		MovieCast := &LogResult{}
+		err := json.Unmarshal(data, MovieCast)
+		if err != nil {
+			log.Println("unable to unmarshal movie cast", err)
+			return
+		}
+
+		log.Printf("Movie Info: %s (%s) - %d cast members", MovieCast.Movie, MovieCast.Release, len(MovieCast.Cast))
 	}
 
 	go a.Start()
@@ -99,7 +151,7 @@ func main() {
 
 	// let the services get started
 	// TODO: make this not racy
-	<-time.After(5 * time.Second)
+	<-time.After(1 * time.Second)
 
 	go func() {
 		for {
@@ -140,11 +192,49 @@ func listenHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func fetchMovies(year int) movieSearchResult {
-	// https://api.themoviedb.org/3/discover/movie?primary_release_year=2010&sort_by=vote_average.desc&api_key=3f73ec50653cfeda94a47c55105adb85
-	return movieSearchResult{}
+	results := movieSearchResult{}
+	resp, err := http.Get(fmt.Sprintf("https://api.themoviedb.org/3/discover/movie?primary_release_year=%d&sort_by=vote_average.desc&api_key=3f73ec50653cfeda94a47c55105adb85", year))
+	if err != nil {
+		log.Println("unable to get movie results", err)
+		return results
+	}
+	defer resp.Body.Close()
+
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("unable to read search body", err)
+		return results
+	}
+
+	err = json.Unmarshal(data, &results)
+	if err != nil {
+		log.Println("unable to unmarshal movie search", err)
+		return results
+	}
+
+	return results
 }
 
 func fetchCast(movieID int) castSearchResult {
-	// https://api.themoviedb.org/3/movie/42079/credits?api_key=3f73ec50653cfeda94a47c55105adb85
-	return castSearchResult{}
+	results := castSearchResult{}
+	resp, err := http.Get(fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/credits?api_key=3f73ec50653cfeda94a47c55105adb85", movieID))
+	if err != nil {
+		log.Println("unable to get cast results", err)
+		return results
+	}
+	defer resp.Body.Close()
+
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("unable to read cast search body", err)
+		return results
+	}
+
+	err = json.Unmarshal(data, &results)
+	if err != nil {
+		log.Println("unable to unmarshal cast search", err)
+		return results
+	}
+
+	return results
 }
