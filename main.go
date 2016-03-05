@@ -8,25 +8,31 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/sethgrid/hart/service"
 )
 
-// global
+// DataIn is used in the http listenerHandler and main to accept work and pass it to services
 var DataIn chan int
 
+// movieSearchResult holds movies searches from themoviedb.com
 type movieSearchResult struct {
 	Results      []MovieData `json:"results"`
 	TotalPages   int         `json:"total_pages"`
 	TotalResults int         `json:"total_results"`
 }
 
+// castSearchResult holds cast searches from themoviedb.com
 type castSearchResult struct {
 	Results []Cast `json:"cast"`
 }
 
+// MovieData represents a single movie
+// we can expand the fields if we want
+// for example, we don't use `Adult`... yet.
 type MovieData struct {
 	Adult       bool   `json:"adult"`
 	ID          int    `json:"id"`
@@ -34,6 +40,7 @@ type MovieData struct {
 	Title       string `json:"title"`
 }
 
+// Cast holds the complete cast response
 type Cast struct {
 	CastID      int    `json:"cast_id"`
 	Character   string `json:"character"`
@@ -43,44 +50,69 @@ type Cast struct {
 	ProfilePath string `json:"profile_path"`
 }
 
+// LogResult represents what we want to persist
 type LogResult struct {
 	Movie   string   `json:"movie_title"`
 	Release string   `json:"release_date"`
 	Cast    []string `json:"cast"`
 }
 
-func main() {
-	// read configs
-	// start listener service
-	// start service_a
-	// start service_b
-	// block
-	var port int
-	var amqpURL string
-	var apiKey string
-	flag.IntVar(&port, "port", 9000, "set the port of the listener")
-	flag.StringVar(&apiKey, "api_key", "3f73ec50653cfeda94a47c55105adb85", "set themoviedb api key")
-	//flag.StringVar(&amqpURL, "rabbitmq_url", "amqp://guest:guest@localhost:5672/", "set the protocol, host, and port for rabbitmq")
-	flag.StringVar(&amqpURL, "rabbitmq_url", "amqp://mark:password@localhost:5672/", "set the protocol, host, and port for rabbitmq")
+type config struct {
+	Port     int    `json:"port"`
+	APIKey   string `json:"api-key"`
+	AMQPURL1 string `json:"rabbitmq-url-1"`
+	AMQPURL2 string `json:"rabbitmq-url-2"`
+	AMQPURL3 string `json:"rabbitmq-url-3"`
+}
 
+func main() {
+	var port int
+	var amqpURL1, amqpURL2, amqpURL3 string
+	var apiKey string
+	var configPath string
+	flag.IntVar(&port, "port", 9000, "set the port of the listener")
+	flag.StringVar(&apiKey, "api-key", "3f73ec50653cfeda94a47c55105adb85", "set themoviedb api key")
+	flag.StringVar(&amqpURL1, "rabbitmq-url-1", "amqp://guest:guest@localhost:5672/", "set the protocol, host, and port for rabbitmq year queue")
+	flag.StringVar(&amqpURL2, "rabbitmq-url-2", "amqp://guest:guest@localhost:5672/", "set the protocol, host, and port for rabbitmq movie queue")
+	flag.StringVar(&amqpURL3, "rabbitmq-url-3", "amqp://guest:guest@localhost:5672/", "set the protocol, host, and port for rabbitmq cast queue")
+	flag.StringVar(&configPath, "config", "", "path to json config file")
 	flag.Parse()
 
-	DataIn = make(chan int, 5)
+	// TODO either find a package or add some logic to let flags override config file
+	if configPath != "" {
+		log.Println("using config at %s, ignoring flags", configPath)
+		data, err := ioutil.ReadFile(configPath)
+		if err != nil {
+			log.Fatal("unable to read config", err)
+		}
+		c := config{}
+		err = json.Unmarshal(data, &c)
+		if err != nil {
+			log.Fatal("unable to marshal config", err)
+		}
+		log.Printf("%#v", c)
+		port = c.Port
+		apiKey = c.APIKey
+		amqpURL1 = c.AMQPURL1
+		amqpURL2 = c.AMQPURL2
+		amqpURL3 = c.AMQPURL3
+	}
 
-	// start up queues
-	// queues := []string{"year", "movie", "cast"}
-	//    for _, queue := range queues{
-
-	//    }
-
-	r := mux.NewRouter()
-	r.HandleFunc("/submit/{year}", listenHandler)
+	// init the chan that lets users submit a year
+	DataIn = make(chan int)
 
 	var err error
 
-	a := service.New("A", amqpURL, "year")
-	b := service.New("B", amqpURL, "movie")
-	c := service.New("C", amqpURL, "cast")
+	// initialize the services.
+	// A listens on year, and will pass work to movie
+	// B listens on movie, and will pass work to cast
+	// C listens on cast, and will log/write results
+	a := service.New("A", amqpURL1, "year")
+	b := service.New("B", amqpURL2, "movie")
+	c := service.New("C", amqpURL3, "cast")
+
+	// define what each service does with work it receives
+	// i.e., each will parse incoming data, mutate it, and pass it on
 
 	a.Receiver = func(data []byte) {
 		year, err := strconv.Atoi(string(data))
@@ -88,7 +120,7 @@ func main() {
 			log.Println("unable to read year", err)
 			return
 		}
-		movies := fetchMovies(year)
+		movies := fetchMovies(apiKey, year)
 
 		for _, movie := range movies.Results {
 			mData, err := json.Marshal(movie)
@@ -117,7 +149,7 @@ func main() {
 		compiledInfo.Release = movie.ReleaseDate
 		compiledInfo.Cast = make([]string, 0)
 
-		castResult := fetchCast(movie.ID)
+		castResult := fetchCast(apiKey, movie.ID)
 		for _, cast := range castResult.Results {
 			compiledInfo.Cast = append(compiledInfo.Cast, cast.Name)
 		}
@@ -145,14 +177,16 @@ func main() {
 		log.Printf("Movie Info: %s (%s) - %d cast members", MovieCast.Movie, MovieCast.Release, len(MovieCast.Cast))
 	}
 
-	go a.Start()
-	go b.Start()
-	go c.Start()
+	// start all the services; waitgroup will block until
+	// we can be sure that all services are started
+	wg := sync.WaitGroup{}
+	wg.Add(3)
+	go a.Start(&wg)
+	go b.Start(&wg)
+	go c.Start(&wg)
+	wg.Wait()
 
-	// let the services get started
-	// TODO: make this not racy
-	<-time.After(1 * time.Second)
-
+	// handle the submission of new `year` values to kick off jobs
 	go func() {
 		for {
 			select {
@@ -168,6 +202,10 @@ func main() {
 		}
 	}()
 
+	// start a listener to so we can submit new years for which to fetch movies
+	r := mux.NewRouter()
+	r.HandleFunc("/submit/{year}", listenHandler)
+
 	log.Printf("starting listening on :%d/submit/{year}", port)
 
 	err = http.ListenAndServe(fmt.Sprintf(":%d", port), r)
@@ -176,6 +214,7 @@ func main() {
 	}
 }
 
+// listenHandler allows us to submit new work to our services
 func listenHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	year := vars["year"]
@@ -191,9 +230,10 @@ func listenHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("hi - going to search for %v", year)))
 }
 
-func fetchMovies(year int) movieSearchResult {
+// fetchMovies returns movies from a given year
+func fetchMovies(apiKey string, year int) movieSearchResult {
 	results := movieSearchResult{}
-	resp, err := http.Get(fmt.Sprintf("https://api.themoviedb.org/3/discover/movie?primary_release_year=%d&sort_by=vote_average.desc&api_key=3f73ec50653cfeda94a47c55105adb85", year))
+	resp, err := http.Get(fmt.Sprintf("https://api.themoviedb.org/3/discover/movie?primary_release_year=%d&sort_by=vote_average.desc&api_key=%s", year, apiKey))
 	if err != nil {
 		log.Println("unable to get movie results", err)
 		return results
@@ -215,9 +255,10 @@ func fetchMovies(year int) movieSearchResult {
 	return results
 }
 
-func fetchCast(movieID int) castSearchResult {
+// fetchCast returns cast results for a given movie
+func fetchCast(apiKey string, movieID int) castSearchResult {
 	results := castSearchResult{}
-	resp, err := http.Get(fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/credits?api_key=3f73ec50653cfeda94a47c55105adb85", movieID))
+	resp, err := http.Get(fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/credits?api_key=%s", movieID, apiKey))
 	if err != nil {
 		log.Println("unable to get cast results", err)
 		return results

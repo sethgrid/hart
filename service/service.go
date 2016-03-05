@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/streadway/amqp"
 )
@@ -39,7 +40,7 @@ func New(id string, host string, listenTopic string) *Service {
 // 	s.ch.Close()
 // }
 
-func (s *Service) Start() error {
+func (s *Service) Start(wg *sync.WaitGroup) error {
 	log.Println("starting", s.id)
 	conn, err := amqp.Dial(s.host)
 
@@ -91,6 +92,7 @@ func (s *Service) Start() error {
 		}
 	}()
 
+	wg.Done()
 	forever := make(chan bool)
 	log.Printf(" [*] Waiting for messages. To exit press CTRL+C")
 	<-forever
