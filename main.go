@@ -7,7 +7,9 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,11 +60,12 @@ type LogResult struct {
 }
 
 type config struct {
-	Port     int    `json:"port"`
-	APIKey   string `json:"api-key"`
-	AMQPURL1 string `json:"rabbitmq-url-1"`
-	AMQPURL2 string `json:"rabbitmq-url-2"`
-	AMQPURL3 string `json:"rabbitmq-url-3"`
+	Port      int    `json:"port"`
+	APIKey    string `json:"api-key"`
+	AMQPURL1  string `json:"rabbitmq-url-1"`
+	AMQPURL2  string `json:"rabbitmq-url-2"`
+	AMQPURL3  string `json:"rabbitmq-url-3"`
+	OutputDir string `json:"output-dir"`
 }
 
 func main() {
@@ -70,11 +73,13 @@ func main() {
 	var amqpURL1, amqpURL2, amqpURL3 string
 	var apiKey string
 	var configPath string
+	var outputDir string
 	flag.IntVar(&port, "port", 9000, "set the port of the listener")
 	flag.StringVar(&apiKey, "api-key", "3f73ec50653cfeda94a47c55105adb85", "set themoviedb api key")
 	flag.StringVar(&amqpURL1, "rabbitmq-url-1", "amqp://guest:guest@localhost:5672/", "set the protocol, host, and port for rabbitmq year queue")
 	flag.StringVar(&amqpURL2, "rabbitmq-url-2", "amqp://guest:guest@localhost:5672/", "set the protocol, host, and port for rabbitmq movie queue")
 	flag.StringVar(&amqpURL3, "rabbitmq-url-3", "amqp://guest:guest@localhost:5672/", "set the protocol, host, and port for rabbitmq cast queue")
+	flag.StringVar(&outputDir, "output-dir", "temp", "path to where output files go, if empty string, no files will be written")
 	flag.StringVar(&configPath, "config", "", "path to json config file")
 	flag.Parse()
 
@@ -96,6 +101,7 @@ func main() {
 		amqpURL1 = c.AMQPURL1
 		amqpURL2 = c.AMQPURL2
 		amqpURL3 = c.AMQPURL3
+		outputDir = c.OutputDir
 	}
 
 	// init the chan that lets users submit a year
@@ -175,6 +181,21 @@ func main() {
 		}
 
 		log.Printf("Movie Info: %s (%s) - %d cast members", MovieCast.Movie, MovieCast.Release, len(MovieCast.Cast))
+
+		if outputDir != "" {
+			// create the directory if needed
+			_, err = os.Stat(outputDir)
+			if err != nil {
+				log.Println(err)
+				err = os.Mkdir(outputDir, 0766)
+				log.Println(err)
+			}
+			// write the file
+			err = ioutil.WriteFile(fmt.Sprintf("%s%s%s", outputDir, string(os.PathSeparator), strings.Replace(MovieCast.Movie, " ", "_", -1)), data, 0766)
+			if err != nil {
+				log.Println("unable to write movie data to disk", err)
+			}
+		}
 	}
 
 	// start all the services; waitgroup will block until
